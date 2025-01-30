@@ -1,0 +1,56 @@
+FROM rocm/dev-ubuntu-22.04:6.2.2-complete
+RUN apt-get update && apt-get install -y wget
+
+
+RUN apt-get install -y libxml2
+
+RUN wget -P /tmp \
+    "https://github.com/conda-forge/miniforge/releases/download/23.3.1-1/Miniforge3-Linux-x86_64.sh" \
+    && bash /tmp/Miniforge3-Linux-x86_64.sh -b -p /opt/conda \
+    && rm /tmp/Miniforge3-Linux-x86_64.sh
+ENV PATH=/opt/conda/bin:$PATH
+RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
+RUN pip3 install pytorch-lightning
+
+RUN mamba config --add channels conda-forge
+RUN mamba config --add channels bioconda
+
+RUN mamba install -y -c jaimergp/label/unsupported-cudatoolkit-shim -c streamhpc -c conda-forge --strict-channel-priority openmm-hip
+
+RUN mamba install -y gcc=12.4 setuptools=59.5.0 pdbfixer
+
+RUN mamba install -y biopython "numpy<2.0.0" pandas "PyYAML==5.4.1" requests scipy "tqdm==4.62.2"
+RUN mamba install -y typing-extensions wandb modelcif=0.7 awscli ml-collections mkl=2022.1 aria2 git
+RUN mamba install -y bioconda::hmmer bioconda::hhsuite bioconda::kalign2
+
+RUN pip install deepspeed dm-tree==0.1.6
+RUN pip install git+https://github.com/NVIDIA/dllogger.git
+RUN pip install pytorch-lightning
+
+
+# # install the flash attention
+WORKDIR /opt
+
+# # Clone the repository
+RUN git clone --recursive https://github.com/ROCm/flash-attention.git
+WORKDIR /opt/flash-attention
+ENV FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE"
+RUN GPU_ARCHS="gfx90a;gfx942" python3 setup.py install
+# # Change to flash-attention directory
+# WORKDIR /opt/flash-attention
+
+# # Install Python dependencies (you might need to add specific dependencies here)
+# RUN pip3 install pytest setuptools wheel
+
+# # Install the package
+# RUN python3 setup.py install
+
+# COPY openfold /opt/openfold/openfold
+# COPY scripts /opt/openfold/scripts
+# COPY run_pretrained_openfold.py /opt/openfold/run_pretrained_openfold.py
+# COPY train_openfold.py /opt/openfold/train_openfold.py
+# COPY setup.py /opt/openfold/setup.py
+# RUN wget -q -P /opt/openfold/openfold/resources \
+#     https://git.scicore.unibas.ch/schwede/openstructure/-/raw/7102c63615b64735c4941278d92b554ec94415f8/modules/mol/alg/src/stereo_chemical_props.txt
+# WORKDIR /opt/openfold
+# RUN python3 setup.py install
