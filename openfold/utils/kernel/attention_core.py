@@ -16,7 +16,7 @@ from functools import reduce
 from operator import mul
 
 import torch
-
+import logging
 attn_core_inplace_cuda = importlib.import_module("attn_core_inplace_cuda")
 
 
@@ -43,14 +43,18 @@ class AttentionCoreFunction(torch.autograd.Function):
             attention_logits += bias_1
         if(bias_2 is not None):
             attention_logits += bias_2
-
+        # log say begin forward
+        logging.info("begin forward")
         attn_core_inplace_cuda.forward_(
             attention_logits, 
             reduce(mul, attention_logits.shape[:-1]),
             attention_logits.shape[-1],
         )
-
+        # log say end forward
+        logging.info("end forward")
+        logging.info("begin matmul")
         o = torch.matmul(attention_logits, v) 
+        logging.info("end matmul")
 
         ctx.bias_1_shape = bias_1.shape if bias_1 is not None else None
         ctx.bias_2_shape = bias_2.shape if bias_2 is not None else None
@@ -62,11 +66,13 @@ class AttentionCoreFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         q, k, v, attention_logits = ctx.saved_tensors
         grad_q = grad_k = grad_v = grad_bias_1 = grad_bias_2 = None
-       
+        logging.info("begin backward matmul")
         grad_v = torch.matmul(
             attention_logits.transpose(-1, -2), 
             grad_output
         )
+        logging.info("end backward matmul")
+        logging.info("begin backward")
 
         attn_core_inplace_cuda.backward_(
             attention_logits,
@@ -76,6 +82,7 @@ class AttentionCoreFunction(torch.autograd.Function):
             attention_logits.shape[-1],
             grad_output.shape[-1],
         )
+        logging.info("end backward")
 
         if(ctx.bias_1_shape is not None):
             grad_bias_1 = torch.sum(
@@ -90,13 +97,16 @@ class AttentionCoreFunction(torch.autograd.Function):
                 dim=tuple(i for i,d in enumerate(ctx.bias_2_shape) if d == 1),
                 keepdim=True,
             )
-
+        logging.info("begin gradq")
         grad_q = torch.matmul(
             attention_logits, k
         )
+        logging.info("end gradq")
+        logging.info("begin gradk")
         grad_k = torch.matmul(
             q.transpose(-1, -2), attention_logits,
         ).transpose(-1, -2)
+        logging.info("end gradk")
 
         return grad_q, grad_k, grad_v, grad_bias_1, grad_bias_2
 

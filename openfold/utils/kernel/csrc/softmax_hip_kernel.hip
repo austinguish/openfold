@@ -35,15 +35,20 @@
     CHECK_CONTIGUOUS(x)
 
 __inline__ __device__ float WarpAllReduceMax(float val) {
-    for (int mask = 1; mask < 32; mask *= 2) {
-        val = max(val, __shfl_xor_sync(0xffffffffULL, val, mask));
+    // rocm use 64bits mask
+    unsigned long long mask = 0xFFFFFFFFFFFFFFFFULL; // All lanes active
+    for (int offset = 1; offset < 32; offset *= 2) {
+        val = max(val, __shfl_xor_sync(mask, val, offset));
     }
     return val;
 }
 
+// Portable Warp All Reduce Sum
 __inline__ __device__ float WarpAllReduceSum(float val) {
-    for (int mask = 1; mask < 32; mask *= 2) {
-        val += __shfl_xor_sync(0xffffffffULL, val, mask);
+    // rocm use 64bits mask
+    unsigned long long mask = 0xFFFFFFFFFFFFFFFFULL; // All lanes active
+    for (int offset = 1; offset < 32; offset *= 2) {
+        val += __shfl_xor_sync(mask, val, offset);
     }
     return val;
 }
