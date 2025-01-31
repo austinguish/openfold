@@ -13,18 +13,20 @@
 // limitations under the License.
 
 // modified from fastfold/model/fastnn/kernel/cuda_native/csrc/softmax_cuda_kernel.cu
-// hipified by yiwei jiang
 
-#include <hip/hip_runtime.h>
 #include <hip/hip_math_constants.h>
 #include <torch/extension.h>
-#include <c10/cuda/CUDAGuard.h>
+#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 
 #include <iostream>
 
 #include "ATen/ATen.h"
-#include "ATen/cuda/CUDAContext.h"
+#include "ATen/hip/HIPContext.h"
 #include "compat.h"
+#include <hip/hip_runtime.h>
+#include <hip/hip_runtime_api.h>
+#include<hip/amd_detail/amd_warp_sync_functions.h>
+
 
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
@@ -34,14 +36,14 @@
 
 __inline__ __device__ float WarpAllReduceMax(float val) {
     for (int mask = 1; mask < 32; mask *= 2) {
-        val = max(val, __shfl_xor_sync(0xffffffff, val, mask));
+        val = max(val, __shfl_xor_sync(0xffffffffULL, val, mask));
     }
     return val;
 }
 
 __inline__ __device__ float WarpAllReduceSum(float val) {
     for (int mask = 1; mask < 32; mask *= 2) {
-        val += __shfl_xor_sync(0xffffffff, val, mask);
+        val += __shfl_xor_sync(0xffffffffULL, val, mask);
     }
     return val;
 }
@@ -111,19 +113,19 @@ void attn_softmax_inplace_forward_(
     long long rows, int cols
 ) {
     CHECK_INPUT(input);
-    const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
+    const at::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device_of(input));
 
     int grid = (rows + 3) / 4;
     dim3 block(128);
 
     if (input.dtype() == torch::kFloat32) {
-        attn_softmax_inplace_<float><<<grid, block>>>(
+       hipLaunchKernelGGL(( attn_softmax_inplace_<float>), dim3(grid), dim3(block), 0, 0,
             (float *)input.data_ptr(),
             rows, cols
         );
     }
     else {
-        attn_softmax_inplace_<at::BFloat16><<<grid, block>>>(
+       hipLaunchKernelGGL(( attn_softmax_inplace_<at::BFloat16>), dim3(grid), dim3(block), 0, 0,
             (at::BFloat16 *)input.data_ptr(),
             rows, cols
         );
@@ -220,20 +222,20 @@ void attn_softmax_inplace_backward_(
     CHECK_INPUT(output);
     CHECK_INPUT(d_ov);
     CHECK_INPUT(values);
-    const at::cuda::OptionalCUDAGuard device_guard(device_of(output));
+    const at::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device_of(output));
 
     int grid = (rows + 3) / 4;
     dim3 block(128);
 
     if (output.dtype() == torch::kFloat32) {
-        attn_softmax_inplace_grad_<float><<<grid, block>>>(
+       hipLaunchKernelGGL(( attn_softmax_inplace_grad_<float>), dim3(grid), dim3(block), 0, 0,
             (float *)output.data_ptr(),
             (float *)d_ov.data_ptr(),
             (float *)values.data_ptr(),
             rows, cols_output, cols_values
         );
     } else {
-        attn_softmax_inplace_grad_<at::BFloat16><<<grid, block>>>(
+       hipLaunchKernelGGL(( attn_softmax_inplace_grad_<at::BFloat16>), dim3(grid), dim3(block), 0, 0,
             (at::BFloat16 *)output.data_ptr(),
             (at::BFloat16 *)d_ov.data_ptr(),
             (at::BFloat16 *)values.data_ptr(),

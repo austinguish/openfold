@@ -36,6 +36,10 @@ RUN git clone --recursive https://github.com/ROCm/flash-attention.git
 WORKDIR /opt/flash-attention
 ENV FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE"
 RUN GPU_ARCHS="gfx90a;gfx942" python3 setup.py install
+# install the openfold
+# WORKDIR /opt
+RUN git clone -b  
+ENV LD_LIBRARY_PATH=/opt/conda/lib/python3.10/site-packages/torch/lib:$LD_LIBRARY_PATH
 # # Change to flash-attention directory
 # WORKDIR /opt/flash-attention
 
