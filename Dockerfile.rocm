@@ -1,3 +1,4 @@
+ARG FORCE_RECLONE=false
 FROM rocm/dev-ubuntu-22.04:6.2.2-complete
 RUN apt-get update && apt-get install -y wget
 
@@ -30,7 +31,7 @@ RUN pip install pytorch-lightning
 
 # # install the flash attention
 WORKDIR /opt
-
+RUN if [ "$FORCE_RECLONE" = "true" ]; then rm -rf openfold; fi  # Conditional removal
 # # Clone the repository
 RUN git clone --recursive https://github.com/ROCm/flash-attention.git
 WORKDIR /opt/flash-attention
@@ -42,21 +43,3 @@ RUN git clone -b  rocm_support https://github.com/austinguish/openfold.git
 WORKDIR /opt/openfold
 ENV LD_LIBRARY_PATH=/opt/conda/lib/python3.10/site-packages/torch/lib:$LD_LIBRARY_PATH
 RUN python3 setup_rocm.py install
-# # Change to flash-attention directory
-# WORKDIR /opt/flash-attention
-
-# # Install Python dependencies (you might need to add specific dependencies here)
-# RUN pip3 install pytest setuptools wheel
-
-# # Install the package
-# RUN python3 setup.py install
-
-# COPY openfold /opt/openfold/openfold
-# COPY scripts /opt/openfold/scripts
-# COPY run_pretrained_openfold.py /opt/openfold/run_pretrained_openfold.py
-# COPY train_openfold.py /opt/openfold/train_openfold.py
-# COPY setup.py /opt/openfold/setup.py
-# RUN wget -q -P /opt/openfold/openfold/resources \
-#     https://git.scicore.unibas.ch/schwede/openstructure/-/raw/7102c63615b64735c4941278d92b554ec94415f8/modules/mol/alg/src/stereo_chemical_props.txt
-# WORKDIR /opt/openfold
-# RUN python3 setup.py install
