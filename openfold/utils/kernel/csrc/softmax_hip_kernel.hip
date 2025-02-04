@@ -1,19 +1,3 @@
-// Copyright 2021 AlQuraishi Laboratory
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-// modified from fastfold/model/fastnn/kernel/cuda_native/csrc/softmax_cuda_kernel.cu
-
 #include <hip/hip_math_constants.h>
 #include <torch/extension.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
@@ -25,9 +9,9 @@
 #include "compat.h"
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
-#include<hip/amd_detail/amd_warp_sync_functions.h>
+#include <hip/amd_detail/amd_warp_sync_functions.h>
 
-
+#define WAVEFRONT_SIZE 64
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_INPUT(x) \
@@ -35,34 +19,34 @@
     CHECK_CONTIGUOUS(x)
 
 __inline__ __device__ float WarpAllReduceMax(float val) {
-    // rocm use 64bits mask
-    unsigned long long mask = 0xFFFFFFFFFFFFFFFFULL; // All lanes active
-    for (int offset = 1; offset < 32; offset *= 2) {
+    // using the 64 bits mask
+    unsigned long long mask = 0xFFFFFFFFFFFFFFFFULL;
+    // set the WAVEFRONT_SIZE to 64 now
+    for (int offset = 1; offset < WAVEFRONT_SIZE; offset *= 2) {
         val = max(val, __shfl_xor_sync(mask, val, offset));
     }
     return val;
 }
 
-// Portable Warp All Reduce Sum
 __inline__ __device__ float WarpAllReduceSum(float val) {
-    // rocm use 64bits mask
-    unsigned long long mask = 0xFFFFFFFFFFFFFFFFULL; // All lanes active
-    for (int offset = 1; offset < 32; offset *= 2) {
+    unsigned long long mask = 0xFFFFFFFFFFFFFFFFULL;
+    for (int offset = 1; offset < WAVEFRONT_SIZE; offset *= 2) {
         val += __shfl_xor_sync(mask, val, offset);
     }
     return val;
 }
-
 
 template<typename T>
 __global__ void attn_softmax_inplace_(
     T *input,
     long long rows, int cols
 ) {
-    int threadidx_x = threadIdx.x / 32;
-    int threadidx_y = threadIdx.x % 32;
+    // 修改线程索引计算以适应64宽度的wavefront
+    int threadidx_x = threadIdx.x / WAVEFRONT_SIZE;
+    int threadidx_y = threadIdx.x % WAVEFRONT_SIZE;
     long long row_offset = (long long)(blockIdx.x * 4 + threadidx_x);
-    int cols_per_thread = (cols + 31) / 32;
+    // 修改每线程列数计算
+    int cols_per_thread = (cols + WAVEFRONT_SIZE - 1) / WAVEFRONT_SIZE;
     int cols_this_thread = cols_per_thread;
 
     int last_y = (cols / cols_per_thread);
@@ -74,7 +58,7 @@ __global__ void attn_softmax_inplace_(
         cols_this_thread = 0;
     }
 
-    float buf[32];
+    float buf[64];
 
     int lane_id = threadidx_y;
 
@@ -112,32 +96,6 @@ __global__ void attn_softmax_inplace_(
     }
 }
 
-
-void attn_softmax_inplace_forward_(
-    at::Tensor input,
-    long long rows, int cols
-) {
-    CHECK_INPUT(input);
-    const at::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device_of(input));
-
-    int grid = (rows + 3) / 4;
-    dim3 block(128);
-
-    if (input.dtype() == torch::kFloat32) {
-       hipLaunchKernelGGL(( attn_softmax_inplace_<float>), dim3(grid), dim3(block), 0, 0,
-            (float *)input.data_ptr(),
-            rows, cols
-        );
-    }
-    else {
-       hipLaunchKernelGGL(( attn_softmax_inplace_<at::BFloat16>), dim3(grid), dim3(block), 0, 0,
-            (at::BFloat16 *)input.data_ptr(),
-            rows, cols
-        );
-    }
-}
-
-
 template<typename T>
 __global__ void attn_softmax_inplace_grad_(
     T *output,
@@ -147,14 +105,12 @@ __global__ void attn_softmax_inplace_grad_(
     int cols_output,
     int cols_values
 ) {
-    int threadidx_x = threadIdx.x / 32;
-    int threadidx_y = threadIdx.x % 32;
+    int threadidx_x = threadIdx.x / WAVEFRONT_SIZE;
+    int threadidx_y = threadIdx.x % WAVEFRONT_SIZE;
     long long row_offset = (long long)(blockIdx.x * 4 + threadidx_x);
-    int cols_per_thread = (cols_output + 31) / 32;
+    int cols_per_thread = (cols_output + WAVEFRONT_SIZE - 1) / WAVEFRONT_SIZE;
     int cols_this_thread = cols_per_thread;
     int rows_values = cols_output;
-    // values are set to the beginning of the current
-    // rows_values x cols_values leaf matrix
     long long value_row_offset = row_offset - row_offset % rows_values;
     int last_y = (cols_output / cols_per_thread);
 
@@ -165,8 +121,8 @@ __global__ void attn_softmax_inplace_grad_(
         cols_this_thread = 0;
     }
 
-    float y_buf[32];
-    float dy_buf[32];
+    float y_buf[64];
+    float dy_buf[64];
 
     int lane_id = threadidx_y;
 
@@ -177,7 +133,6 @@ __global__ void attn_softmax_inplace_grad_(
 
         float thread_max = -1 * HIP_INF_F;
 
-        // Compute a chunk of the output gradient on the fly
         int value_row_idx = 0;
         int value_idx = 0;
         #pragma unroll
@@ -215,6 +170,30 @@ __global__ void attn_softmax_inplace_grad_(
     }
 }
 
+void attn_softmax_inplace_forward_(
+    at::Tensor input,
+    long long rows, int cols
+) {
+    CHECK_INPUT(input);
+    const at::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device_of(input));
+
+    int grid = (rows + 3) / 4;
+    // set the block size to 256 now
+    dim3 block(256); 
+
+    if (input.dtype() == torch::kFloat32) {
+        hipLaunchKernelGGL((attn_softmax_inplace_<float>), dim3(grid), dim3(block), 0, 0,
+            (float *)input.data_ptr(),
+            rows, cols
+        );
+    }
+    else {
+        hipLaunchKernelGGL((attn_softmax_inplace_<at::BFloat16>), dim3(grid), dim3(block), 0, 0,
+            (at::BFloat16 *)input.data_ptr(),
+            rows, cols
+        );
+    }
+}
 
 void attn_softmax_inplace_backward_(
     at::Tensor output,
@@ -230,17 +209,18 @@ void attn_softmax_inplace_backward_(
     const at::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device_of(output));
 
     int grid = (rows + 3) / 4;
-    dim3 block(128);
+    // double the block size from 128->256
+    dim3 block(256);
 
     if (output.dtype() == torch::kFloat32) {
-       hipLaunchKernelGGL(( attn_softmax_inplace_grad_<float>), dim3(grid), dim3(block), 0, 0,
+        hipLaunchKernelGGL((attn_softmax_inplace_grad_<float>), dim3(grid), dim3(block), 0, 0,
             (float *)output.data_ptr(),
             (float *)d_ov.data_ptr(),
             (float *)values.data_ptr(),
             rows, cols_output, cols_values
         );
     } else {
-       hipLaunchKernelGGL(( attn_softmax_inplace_grad_<at::BFloat16>), dim3(grid), dim3(block), 0, 0,
+        hipLaunchKernelGGL((attn_softmax_inplace_grad_<at::BFloat16>), dim3(grid), dim3(block), 0, 0,
             (at::BFloat16 *)output.data_ptr(),
             (at::BFloat16 *)d_ov.data_ptr(),
             (at::BFloat16 *)values.data_ptr(),
