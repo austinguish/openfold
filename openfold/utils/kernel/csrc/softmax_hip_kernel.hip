@@ -41,11 +41,11 @@ __global__ void attn_softmax_inplace_(
     T *input,
     long long rows, int cols
 ) {
-    // 修改线程索引计算以适应64宽度的wavefront
+    // set the thread index to WAVEFRONT_SIZE
     int threadidx_x = threadIdx.x / WAVEFRONT_SIZE;
     int threadidx_y = threadIdx.x % WAVEFRONT_SIZE;
     long long row_offset = (long long)(blockIdx.x * 4 + threadidx_x);
-    // 修改每线程列数计算
+    // set the cols calculation to WAVEFRONT_SIZE
     int cols_per_thread = (cols + WAVEFRONT_SIZE - 1) / WAVEFRONT_SIZE;
     int cols_this_thread = cols_per_thread;
 
